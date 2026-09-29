@@ -1,0 +1,40 @@
+Create a pure frontend, static web application for a "Study Hub" using Vite, React, Tailwind CSS, and PNPM. The app must be fully deployable to GitHub Pages (no live backend server). It must be fully mobile and desktop responsive.
+
+### DATA PERSISTENCE & OFFLINE MECHANISM (Critical)
+- Because there is no traditional backend database, use browser LocalStorage to persist all Admin data (Subjects, Lessons, Quizzes/Exams) and Student results on the device.
+- Network Requirements:
+  * Admin: Requires an active internet connection to initially open the app and set up the library.
+  * Student: Requires an online connection only to load the initial web app URL or refresh the page. Once inside an active Quiz or Exam, all logic must run entirely client-side, allowing the student to complete the test even if they lose internet connection or go offline mid-quiz.
+
+### ROLE 1: ADMIN PORTAL
+- Access Gate: Protect the admin panel with a simple text input password field. The hardcoded admin password is: "YOUR_PASSWORD_HERE". 
+- Manage Library Screen: Allow the admin to manage Subjects. Under each Subject, the admin can manage Lessons and Quizzes/Exams with the following form fields:
+  * Title
+  * Subject Name (Dropdown/Select or Add New)
+  * Lesson Number/Identifier (e.g., Lesson 1)
+  * Tags Badge: Add/Select multiple badges (e.g., "Midterm Exam", "Final Exam")
+  * Type Toggle: Choose between "Quiz" or "Exam"
+  * Question Types (Allow selecting multiple checkboxes per quiz): Flashcards, Multiple choice, Identification, Enumeration, Matching type.
+  * Behavioral Rules (Checkboxes):
+    - Add timer (If checked, show a customizable countdown timer)
+    - Allow Skip 
+    - Allow Previous (Go back to the previous question)
+    - Allow Flag Questions (Bookmark a question for review later)
+    - Randomized (Shuffle question order on start)
+    - Show explanation toggle (Checked: Show explanation immediately during the quiz after answering; Unchecked: Show explanation only at the very end during the score review)
+- AI Bulk-Paste Importer: Include a large text area field for each quiz where the admin can paste raw text questions formulated from external AIs (ChatGPT, Claude, Gemini). The app should parse standard formats (e.g., "Q1: Text \n A) ... \n B) ... \n Answer: A \n Explanation: ...") or provide a clear JSON/Markdown template for the admin to follow so pasting is fast and effortless.
+
+### ROLE 2: STUDENT PORTAL
+- No log-in required. Students landing on the homepage immediately see the available Subjects, Lessons, and Quizzes/Exams.
+- Quiz/Exam Interface:
+  * Respect all checked behavioral rules (Timer, Skip, Previous, Flag, Randomization).
+  * If "Show explanation" was checked by the admin, reveal the explanation instantly upon clicking submit on a question.
+- Post-Quiz Results Screen:
+  * When finished, display the final score (Score over total items) inside a clean, animated visual circular ring graph.
+  * Below the ring, provide a comprehensive "Review Mode" displaying a list of all questions.
+  * Show the student's answer vs. the correct answer (highlighted in red for wrong, green for correct).
+  * Show the corresponding explanations and any question flags they marked during the test.
+
+### PROJECT MANAGEMENT & PACKAGING
+- Configure the project to build cleanly using 'pnpm build'.
+- Ensure the Vite configuration uses relative asset base paths ('base: "./"') so it loads properly when deployed to a GitHub Pages subdirectory (username.github.io/repository-name).
