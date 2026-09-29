@@ -27,6 +27,8 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Moon,
+  Sun,
   Target,
   TimerReset,
   Trash2,
@@ -40,6 +42,13 @@ import {
 const STORAGE = {
   library: "studyhub.library.v1",
   results: "studyhub.results.v1",
+  settings: "studyhub.settings.v1",
+  theme: "studyhub.theme.v1",
+};
+
+const DEFAULT_SETTINGS = {
+  heroTitle: "Learn with focus.",
+  heroAccent: "Progress with confidence.",
 };
 
 const DEFAULT_LIBRARY = {
@@ -171,19 +180,20 @@ function mergeLibrarySnapshots(localValue, staticValue) {
   });
 }
 
-function createDatabaseSnapshot(library) {
+function createDatabaseSnapshot(library, settings = DEFAULT_SETTINGS) {
   const normalized = normalizeLibrary(library);
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
+    settings,
     subjects: normalized.subjects,
     lessons: normalized.lessons,
     quizzes: normalized.quizzes,
   };
 }
 
-function downloadDatabase(library) {
-  const file = new Blob([JSON.stringify(createDatabaseSnapshot(library), null, 2)], { type: "application/json" });
+function downloadDatabase(library, settings) {
+  const file = new Blob([JSON.stringify(createDatabaseSnapshot(library, settings), null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(file);
   const link = document.createElement("a");
   link.href = url;
@@ -219,6 +229,8 @@ function answerIsCorrect(question, answer) {
 function App() {
   const [library, setLibrary] = useState(() => normalizeLibrary(loadStorage(STORAGE.library, DEFAULT_LIBRARY)));
   const [results, setResults] = useState(() => loadStorage(STORAGE.results, []));
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadStorage(STORAGE.settings, {}) }));
+  const [theme, setTheme] = useState(() => loadStorage(STORAGE.theme, "dark") === "light" ? "light" : "dark");
   const [page, setPage] = useState("home");
   const [selectedSubject, setSelectedSubject] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -230,6 +242,12 @@ function App() {
 
   useEffect(() => localStorage.setItem(STORAGE.library, JSON.stringify(library)), [library]);
   useEffect(() => localStorage.setItem(STORAGE.results, JSON.stringify(results)), [results]);
+  useEffect(() => localStorage.setItem(STORAGE.settings, JSON.stringify(settings)), [settings]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    localStorage.setItem(STORAGE.theme, theme);
+  }, [theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,6 +304,11 @@ function App() {
     setNotice("Library saved to this device");
   };
 
+  const updateSettings = (next) => {
+    setSettings(next);
+    setNotice("Homepage settings saved to this device");
+  };
+
   return (
     <div className="app-shell">
       <Header
@@ -293,6 +316,8 @@ function App() {
         onHome={openHome}
         onAdmin={() => setAdminOpen(true)}
         onNavigate={(nextPage) => setPage(nextPage)}
+        theme={theme}
+        setTheme={setTheme}
       />
       {page === "home" && (
         <HomePage
@@ -304,6 +329,7 @@ function App() {
           setQuery={setSearchQuery}
           onStart={startQuiz}
           onAdmin={() => setAdminOpen(true)}
+          settings={settings}
         />
       )}
       {page === "quiz" && quiz && <QuizPage quiz={quiz} onExit={openHome} onFinish={finishQuiz} />}
@@ -311,7 +337,7 @@ function App() {
         <ResultsPage result={quizResult} library={library} onHome={openHome} onRetry={() => startQuiz(quiz)} />
       )}
       {page === "library" && (
-        <AdminPage library={library} onUpdate={updateLibrary} onExit={openHome} />
+        <AdminPage library={library} settings={settings} onUpdate={updateLibrary} onUpdateSettings={updateSettings} onExit={openHome} />
       )}
       {adminOpen && (
         <AdminGate
@@ -329,7 +355,7 @@ function App() {
   );
 }
 
-function Header({ page, onHome, onAdmin, onNavigate }) {
+function Header({ page, onHome, onAdmin, onNavigate, theme, setTheme }) {
   const isAdmin = page === "library";
   return (
     <header className="topbar">
@@ -344,6 +370,10 @@ function Header({ page, onHome, onAdmin, onNavigate }) {
         </nav>
         <div className="topbar-actions">
           <span className="online-status"><span className="status-dot" /> Offline-ready</span>
+          <div className="theme-switcher" role="group" aria-label="Visual theme">
+            <button className={`theme-button ${theme === "light" ? "active" : ""}`} onClick={() => setTheme("light")} aria-pressed={theme === "light"} title="Use light theme"><Sun size={15} /><span className="theme-label">Light</span></button>
+            <button className={`theme-button ${theme === "dark" ? "active" : ""}`} onClick={() => setTheme("dark")} aria-pressed={theme === "dark"} title="Use dark theme"><Moon size={15} /><span className="theme-label">Dark</span></button>
+          </div>
           {isAdmin ? (
             <button className="avatar-button" onClick={onHome}>SH</button>
           ) : (
@@ -355,7 +385,7 @@ function Header({ page, onHome, onAdmin, onNavigate }) {
   );
 }
 
-function HomePage({ library, results, subject, setSubject, query, setQuery, onStart, onAdmin }) {
+function HomePage({ library, results, subject, setSubject, query, setQuery, onStart, onAdmin, settings }) {
   const filteredQuizzes = useMemo(() => library.quizzes.filter((item) => {
     const matchesSubject = subject === "all" || item.subjectId === subject;
     const haystack = `${item.title} ${item.lesson} ${item.tags.join(" ")}`.toLowerCase();
@@ -370,7 +400,7 @@ function HomePage({ library, results, subject, setSubject, query, setQuery, onSt
       <section className="hero-grid">
         <div className="hero-copy">
           <div className="eyebrow"><span className="eyebrow-line" /> YOUR PERSONAL STUDY SPACE</div>
-          <h1>Learn with focus.<br /><em>Progress with confidence.</em></h1>
+          <h1>{settings.heroTitle}<br /><em>{settings.heroAccent}</em></h1>
           <p>Pick up where you left off, or explore a new lesson. Your library is saved right on this device, so your study flow stays uninterrupted.</p>
           <div className="hero-actions">
             <a className="primary-button" href="#library"><BookOpen size={17} /> Explore library</a>
@@ -526,7 +556,7 @@ function ResultsPage({ result, library, onHome, onRetry }) {
 const emptyQuestion = () => ({ id: makeId("question"), type: "multiple", text: "", options: ["", "", "", ""], answer: "", explanation: "" });
 const blankQuiz = (subjectId) => ({ id: makeId("quiz"), title: "", subjectId, lesson: "Lesson 01", type: "Quiz", tags: ["Practice"], questionTypes: ["Multiple choice"], rules: { timer: false, minutes: 10, skip: true, previous: true, flag: true, random: false, explanation: true }, questions: [emptyQuestion()] });
 
-function AdminPage({ library, onUpdate, onExit }) {
+function AdminPage({ library, settings, onUpdate, onUpdateSettings, onExit }) {
   const [editing, setEditing] = useState(null);
   const [adminTab, setAdminTab] = useState("assessments");
   const [subjectName, setSubjectName] = useState("");
@@ -548,10 +578,34 @@ function AdminPage({ library, onUpdate, onExit }) {
     setSubjectName("");
   };
   if (editing) return <QuizEditor quiz={editing} library={library} onSave={saveQuiz} onCancel={() => setEditing(null)} />;
-  return <main className="admin-page"><div className="admin-header"><div><button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button><div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div><h1>Manage your library</h1><p>Build focused practice for every lesson. Changes are saved locally to this device.</p></div><div className="admin-header-actions"><button className="export-button" onClick={() => downloadDatabase(library)}><Download size={16} /> Save &amp; Export Database JSON</button><button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button></div></div>
-    <div className="admin-tabs"><button className={adminTab === "assessments" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("assessments")}>{iconFor("library")} Assessments <span>{quizzes.length}</span></button><button className={adminTab === "subjects" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("subjects")}>{iconFor("book")} Subjects <span>{library.subjects.length}</span></button><div className="admin-save-state"><span className="status-dot" /> Saved on this device</div></div>
-    {adminTab === "assessments" ? <div className="admin-table-card"><div className="admin-table-heading"><div><h2>Assessments</h2><p>Quizzes and exams available to your students</p></div><div className="admin-search"><Search size={16} /><input placeholder="Find an assessment" /></div></div><div className="assessment-list">{quizzes.map((item) => <div className="assessment-row" key={item.id}><div className={`assessment-symbol ${getSubject(library, item.subjectId).color}`}>{getSubject(library, item.subjectId).icon}</div><div className="assessment-info"><h3>{item.title || "Untitled assessment"}</h3><span>{getSubject(library, item.subjectId).name} <i>·</i> {item.lesson}</span></div><span className={`table-type ${item.type === "Exam" ? "exam" : ""}`}>{item.type}</span><span className="table-questions"><FileQuestion size={14} /> {item.questions.length}</span><div className="row-actions"><button onClick={() => setEditing(item)} title="Edit"><Pencil size={15} /></button><button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(item, null, 2)); }} title="Copy JSON"><Copy size={15} /></button><button onClick={() => deleteQuiz(item.id)} title="Delete"><Trash2 size={15} /></button></div></div>)}</div></div> : <div className="subjects-admin-grid"><div className="subject-manager-card"><div className="admin-card-heading"><div><h2>Subjects</h2><p>Organize your assessment library</p></div><BookOpen size={20} /></div><div className="subject-admin-list">{library.subjects.map((item) => <div className="subject-admin-row" key={item.id}><span className={`subject-symbol ${item.color}`}>{item.icon}</span><div><strong>{item.name}</strong><small>{library.quizzes.filter((quiz) => quiz.subjectId === item.id).length} assessments</small></div><ChevronDown size={15} /></div>)}</div><form className="add-subject-form" onSubmit={addSubject}><input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} placeholder="New subject name" /><button className="secondary-button" type="submit"><Plus size={15} /> Add</button></form></div><div className="admin-info-card"><div className="info-icon"><Sparkles size={19} /></div><h3>Build a clear learning path</h3><p>Use subjects to group lessons, then add assessments with the rules that fit each learning moment.</p><div className="info-list"><span><Check size={15} /> Import questions in bulk</span><span><Check size={15} /> Add custom quiz rules</span><span><Check size={15} /> Keep everything offline-ready</span></div></div></div>}
+  return <main className="admin-page"><div className="admin-header"><div><button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button><div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div><h1>Manage your library</h1><p>Build focused practice for every lesson. Changes are saved locally to this device.</p></div><div className="admin-header-actions"><button className="export-button" onClick={() => downloadDatabase(library, settings)}><Download size={16} /> Save &amp; Export Database JSON</button><button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button></div></div>
+    <div className="admin-tabs"><button className={adminTab === "assessments" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("assessments")}>{iconFor("library")} Assessments <span>{quizzes.length}</span></button><button className={adminTab === "subjects" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("subjects")}>{iconFor("book")} Subjects <span>{library.subjects.length}</span></button><button className={adminTab === "settings" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("settings")}>{iconFor("settings")} Site settings</button><div className="admin-save-state"><span className="status-dot" /> Saved on this device</div></div>
+    {adminTab === "assessments" ? <div className="admin-table-card"><div className="admin-table-heading"><div><h2>Assessments</h2><p>Quizzes and exams available to your students</p></div><div className="admin-search"><Search size={16} /><input placeholder="Find an assessment" /></div></div><div className="assessment-list">{quizzes.map((item) => <div className="assessment-row" key={item.id}><div className={`assessment-symbol ${getSubject(library, item.subjectId).color}`}>{getSubject(library, item.subjectId).icon}</div><div className="assessment-info"><h3>{item.title || "Untitled assessment"}</h3><span>{getSubject(library, item.subjectId).name} <i>·</i> {item.lesson}</span></div><span className={`table-type ${item.type === "Exam" ? "exam" : ""}`}>{item.type}</span><span className="table-questions"><FileQuestion size={14} /> {item.questions.length}</span><div className="row-actions"><button onClick={() => setEditing(item)} title="Edit"><Pencil size={15} /></button><button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(item, null, 2)); }} title="Copy JSON"><Copy size={15} /></button><button onClick={() => deleteQuiz(item.id)} title="Delete"><Trash2 size={15} /></button></div></div>)}</div></div> : adminTab === "subjects" ? <div className="subjects-admin-grid"><div className="subject-manager-card"><div className="admin-card-heading"><div><h2>Subjects</h2><p>Organize your assessment library</p></div><BookOpen size={20} /></div><div className="subject-admin-list">{library.subjects.map((item) => <div className="subject-admin-row" key={item.id}><span className={`subject-symbol ${item.color}`}>{item.icon}</span><div><strong>{item.name}</strong><small>{library.quizzes.filter((quiz) => quiz.subjectId === item.id).length} assessments</small></div><ChevronDown size={15} /></div>)}</div><form className="add-subject-form" onSubmit={addSubject}><input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} placeholder="New subject name" /><button className="secondary-button" type="submit"><Plus size={15} /> Add</button></form></div><div className="admin-info-card"><div className="info-icon"><Sparkles size={19} /></div><h3>Build a clear learning path</h3><p>Use subjects to group lessons, then add assessments with the rules that fit each learning moment.</p><div className="info-list"><span><Check size={15} /> Import questions in bulk</span><span><Check size={15} /> Add custom quiz rules</span><span><Check size={15} /> Keep everything offline-ready</span></div></div></div> : <SiteSettings settings={settings} onSave={onUpdateSettings} />}
   </main>;
+}
+
+function SiteSettings({ settings, onSave }) {
+  const [draft, setDraft] = useState(() => ({ ...DEFAULT_SETTINGS, ...settings }));
+  const update = (key, value) => setDraft((previous) => ({ ...previous, [key]: value }));
+  const save = (event) => {
+    event.preventDefault();
+    onSave({
+      heroTitle: draft.heroTitle.trim() || DEFAULT_SETTINGS.heroTitle,
+      heroAccent: draft.heroAccent.trim() || DEFAULT_SETTINGS.heroAccent,
+    });
+  };
+  return <div className="site-settings-grid">
+    <form className="settings-card" onSubmit={save}>
+      <div className="admin-card-heading"><div><h2>Homepage heading</h2><p>Customize the message students see at the top of the study space.</p></div><Settings2 size={20} /></div>
+      <label className="field-label">Main heading<input value={draft.heroTitle} onChange={(event) => update("heroTitle", event.target.value)} placeholder="Learn with focus." /></label>
+      <label className="field-label">Accent heading<input value={draft.heroAccent} onChange={(event) => update("heroAccent", event.target.value)} placeholder="Progress with confidence." /></label>
+      <div className="settings-actions"><span className="settings-help">Changes are saved locally on this device.</span><button className="primary-button" type="submit"><Check size={16} /> Save heading</button></div>
+    </form>
+    <div className="settings-card settings-preview-card">
+      <div className="admin-card-heading"><div><h2>Live preview</h2><p>This is how the heading will appear on the homepage.</p></div><Sparkles size={20} /></div>
+      <div className="settings-preview"><div className="eyebrow"><span className="eyebrow-line" /> YOUR PERSONAL STUDY SPACE</div><h3>{draft.heroTitle || DEFAULT_SETTINGS.heroTitle}<br /><em>{draft.heroAccent || DEFAULT_SETTINGS.heroAccent}</em></h3></div>
+    </div>
+  </div>;
 }
 
 function QuizEditor({ quiz, library, onSave, onCancel }) {
