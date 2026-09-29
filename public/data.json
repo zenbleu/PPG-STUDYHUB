@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "subjects": [
+    {
+      "id": "science",
+      "name": "General Science",
+      "color": "violet",
+      "icon": "✦"
+    },
+    {
+      "id": "math",
+      "name": "Mathematics",
+      "color": "blue",
+      "icon": "∑"
+    },
+    {
+      "id": "history",
+      "name": "World History",
+      "color": "amber",
+      "icon": "◐"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "science-lesson-04",
+      "subjectId": "science",
+      "title": "Lesson 04",
+      "identifier": "Lesson 04",
+      "quizIds": ["science-midterm"]
+    },
+    {
+      "id": "math-lesson-02",
+      "subjectId": "math",
+      "title": "Lesson 02",
+      "identifier": "Lesson 02",
+      "quizIds": ["math-foundations"]
+    },
+    {
+      "id": "history-lesson-07",
+      "subjectId": "history",
+      "title": "Lesson 07",
+      "identifier": "Lesson 07",
+      "quizIds": ["history-modern"]
+    }
+  ],
+  "quizzes": [
+    {
+      "id": "science-midterm",
+      "title": "The Living World",
+      "subjectId": "science",
+      "lesson": "Lesson 04",
+      "type": "Exam",
+      "tags": ["Midterm Exam", "Biology"],
+      "questionTypes": ["Multiple choice", "Identification"],
+      "rules": {
+        "timer": true,
+        "minutes": 12,
+        "skip": true,
+        "previous": true,
+        "flag": true,
+        "random": false,
+        "explanation": true
+      },
+      "questions": [
+        {
+          "id": "s1",
+          "type": "multiple",
+          "text": "Which part of a plant cell is responsible for photosynthesis?",
+          "options": ["Nucleus", "Chloroplast", "Mitochondria", "Cell wall"],
+          "answer": "Chloroplast",
+          "explanation": "Chloroplasts contain chlorophyll, which captures light energy for photosynthesis."
+        },
+        {
+          "id": "s2",
+          "type": "multiple",
+          "text": "What is the smallest unit of life?",
+          "options": ["Tissue", "Organ", "Cell", "Atom"],
+          "answer": "Cell",
+          "explanation": "The cell is the basic structural and functional unit of all known living organisms."
+        },
+        {
+          "id": "s3",
+          "type": "identification",
+          "text": "The process by which liquid water changes into water vapor is called ___.",
+          "answer": "Evaporation",
+          "explanation": "Evaporation happens when heat gives water molecules enough energy to escape into the air."
+        },
+        {
+          "id": "s4",
+          "type": "multiple",
+          "text": "Which organ pumps blood throughout the human body?",
+          "options": ["Lungs", "Brain", "Liver", "Heart"],
+          "answer": "Heart",
+          "explanation": "The heart is a muscular organ that circulates blood through the body's vessels."
+        },
+        {
+          "id": "s5",
+          "type": "identification",
+          "text": "Animals that eat only plants are called ___.",
+          "answer": "Herbivores",
+          "explanation": "Herbivores have diets made up primarily of plants and algae."
+        }
+      ]
+    },
+    {
+      "id": "math-foundations",
+      "title": "Algebra Foundations",
+      "subjectId": "math",
+      "lesson": "Lesson 02",
+      "type": "Quiz",
+      "tags": ["Practice", "Core Skills"],
+      "questionTypes": ["Multiple choice", "Enumeration"],
+      "rules": {
+        "timer": false,
+        "minutes": 10,
+        "skip": true,
+        "previous": true,
+        "flag": true,
+        "random": true,
+        "explanation": false
+      },
+      "questions": [
+        {
+          "id": "m1",
+          "type": "multiple",
+          "text": "Solve for x: 3x + 5 = 20",
+          "options": ["3", "5", "8", "15"],
+          "answer": "5",
+          "explanation": "Subtract 5 from both sides, then divide by 3: x = 15 ÷ 3 = 5."
+        },
+        {
+          "id": "m2",
+          "type": "multiple",
+          "text": "What is the value of 4² + 3²?",
+          "options": ["12", "18", "25", "49"],
+          "answer": "25",
+          "explanation": "4² is 16 and 3² is 9. Together, they equal 25."
+        },
+        {
+          "id": "m3",
+          "type": "identification",
+          "text": "A number that can be written as a fraction of two integers is called a ___ number.",
+          "answer": "Rational",
+          "explanation": "Rational numbers can be represented as p/q, where p and q are integers and q is not zero."
+        },
+        {
+          "id": "m4",
+          "type": "multiple",
+          "text": "Which expression is equivalent to 2(x + 4)?",
+          "options": ["2x + 4", "x + 8", "2x + 8", "2x + 2"],
+          "answer": "2x + 8",
+          "explanation": "Distribute 2 to each term inside the parentheses."
+        }
+      ]
+    },
+    {
+      "id": "history-modern",
+      "title": "Modern History Check-in",
+      "subjectId": "history",
+      "lesson": "Lesson 07",
+      "type": "Quiz",
+      "tags": ["Quick check"],
+      "questionTypes": ["Multiple choice"],
+      "rules": {
+        "timer": true,
+        "minutes": 8,
+        "skip": true,
+        "previous": false,
+        "flag": true,
+        "random": false,
+        "explanation": true
+      },
+      "questions": [
+        {
+          "id": "h1",
+          "type": "multiple",
+          "text": "The Renaissance began in which European country?",
+          "options": ["France", "Italy", "Spain", "England"],
+          "answer": "Italy",
+          "explanation": "The Renaissance began in Italian city-states such as Florence during the 14th century."
+        },
+        {
+          "id": "h2",
+          "type": "multiple",
+          "text": "Which invention made the widespread printing of books possible in Europe?",
+          "options": ["Steam engine", "Compass", "Printing press", "Telescope"],
+          "answer": "Printing press",
+          "explanation": "Gutenberg's movable-type printing press enabled books to be produced much faster."
+        },
+        {
+          "id": "h3",
+          "type": "multiple",
+          "text": "The ancient city of Machu Picchu was built by which civilization?",
+          "options": ["Maya", "Roman", "Inca", "Greek"],
+          "answer": "Inca",
+          "explanation": "Machu Picchu was built by the Inca civilization in the 15th century."
+        }
+      ]
+    }
+  ]
+}

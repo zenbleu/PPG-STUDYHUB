@@ -10,6 +10,7 @@ import {
   CircleHelp,
   Clock3,
   Copy,
+  Download,
   FileQuestion,
   Flag,
   Home,
@@ -114,6 +115,85 @@ function loadStorage(key, fallback) {
   }
 }
 
+function deriveLessons(library) {
+  const lessons = new Map();
+  (library.quizzes || []).forEach((quiz) => {
+    const identifier = quiz.lesson || "Lesson 01";
+    const id = `${quiz.subjectId || "general"}-${identifier.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    const current = lessons.get(id) || {
+      id,
+      subjectId: quiz.subjectId,
+      title: identifier,
+      identifier,
+      quizIds: [],
+    };
+    if (!current.quizIds.includes(quiz.id)) current.quizIds.push(quiz.id);
+    lessons.set(id, current);
+  });
+  return Array.from(lessons.values());
+}
+
+function normalizeLibrary(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const subjects = Array.isArray(source.subjects) && source.subjects.length ? source.subjects : DEFAULT_LIBRARY.subjects;
+  const quizzes = Array.isArray(source.quizzes) ? source.quizzes : [];
+  const derivedLessons = deriveLessons({ subjects, quizzes });
+  const explicitLessons = Array.isArray(source.lessons) ? source.lessons : [];
+  const lessons = [
+    ...derivedLessons,
+    ...explicitLessons.filter((lesson) => !derivedLessons.some((derivedLesson) => derivedLesson.id === lesson.id)),
+  ];
+  return { ...source, subjects, lessons, quizzes };
+}
+
+function hasLibraryData(value) {
+  const source = value?.library && typeof value.library === "object" ? value.library : value;
+  return Boolean(source && Array.isArray(source.subjects) && Array.isArray(source.quizzes) && (source.subjects.length || source.quizzes.length));
+}
+
+function libraryFromPayload(value) {
+  return value?.library && typeof value.library === "object" ? value.library : value;
+}
+
+function mergeLibrarySnapshots(localValue, staticValue) {
+  const local = normalizeLibrary(localValue);
+  const deployed = normalizeLibrary(staticValue);
+  const mergeById = (deployedItems, localItems) => [
+    ...deployedItems,
+    ...localItems.filter((localItem) => !deployedItems.some((deployedItem) => deployedItem.id === localItem.id)),
+  ];
+  return normalizeLibrary({
+    ...local,
+    ...deployed,
+    subjects: mergeById(deployed.subjects, local.subjects),
+    lessons: mergeById(deployed.lessons, local.lessons),
+    quizzes: mergeById(deployed.quizzes, local.quizzes),
+  });
+}
+
+function createDatabaseSnapshot(library) {
+  const normalized = normalizeLibrary(library);
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    subjects: normalized.subjects,
+    lessons: normalized.lessons,
+    quizzes: normalized.quizzes,
+  };
+}
+
+function downloadDatabase(library) {
+  const file = new Blob([JSON.stringify(createDatabaseSnapshot(library), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "data.json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function makeId(prefix = "id") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -137,7 +217,7 @@ function answerIsCorrect(question, answer) {
 }
 
 function App() {
-  const [library, setLibrary] = useState(() => loadStorage(STORAGE.library, DEFAULT_LIBRARY));
+  const [library, setLibrary] = useState(() => normalizeLibrary(loadStorage(STORAGE.library, DEFAULT_LIBRARY)));
   const [results, setResults] = useState(() => loadStorage(STORAGE.results, []));
   const [page, setPage] = useState("home");
   const [selectedSubject, setSelectedSubject] = useState("all");
@@ -150,6 +230,32 @@ function App() {
 
   useEffect(() => localStorage.setItem(STORAGE.library, JSON.stringify(library)), [library]);
   useEffect(() => localStorage.setItem(STORAGE.results, JSON.stringify(results)), [results]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const staticDataPaths = ["./data.json", "/data.json", "/public/data.json"];
+
+    const loadStaticLibrary = async () => {
+      for (const path of staticDataPaths) {
+        try {
+          const response = await fetch(path, { cache: "no-store" });
+          if (!response.ok) continue;
+          const payload = await response.json();
+          const staticLibrary = libraryFromPayload(payload);
+          if (!hasLibraryData(staticLibrary)) continue;
+          if (!cancelled) setLibrary((current) => mergeLibrarySnapshots(current, staticLibrary));
+          return;
+        } catch {
+          // A missing or malformed static snapshot should never block local study data.
+        }
+      }
+    };
+
+    loadStaticLibrary();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -442,7 +548,7 @@ function AdminPage({ library, onUpdate, onExit }) {
     setSubjectName("");
   };
   if (editing) return <QuizEditor quiz={editing} library={library} onSave={saveQuiz} onCancel={() => setEditing(null)} />;
-  return <main className="admin-page"><div className="admin-header"><div><button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button><div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div><h1>Manage your library</h1><p>Build focused practice for every lesson. Changes are saved locally to this device.</p></div><button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button></div>
+  return <main className="admin-page"><div className="admin-header"><div><button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button><div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div><h1>Manage your library</h1><p>Build focused practice for every lesson. Changes are saved locally to this device.</p></div><div className="admin-header-actions"><button className="export-button" onClick={() => downloadDatabase(library)}><Download size={16} /> Save &amp; Export Database JSON</button><button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button></div></div>
     <div className="admin-tabs"><button className={adminTab === "assessments" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("assessments")}>{iconFor("library")} Assessments <span>{quizzes.length}</span></button><button className={adminTab === "subjects" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("subjects")}>{iconFor("book")} Subjects <span>{library.subjects.length}</span></button><div className="admin-save-state"><span className="status-dot" /> Saved on this device</div></div>
     {adminTab === "assessments" ? <div className="admin-table-card"><div className="admin-table-heading"><div><h2>Assessments</h2><p>Quizzes and exams available to your students</p></div><div className="admin-search"><Search size={16} /><input placeholder="Find an assessment" /></div></div><div className="assessment-list">{quizzes.map((item) => <div className="assessment-row" key={item.id}><div className={`assessment-symbol ${getSubject(library, item.subjectId).color}`}>{getSubject(library, item.subjectId).icon}</div><div className="assessment-info"><h3>{item.title || "Untitled assessment"}</h3><span>{getSubject(library, item.subjectId).name} <i>·</i> {item.lesson}</span></div><span className={`table-type ${item.type === "Exam" ? "exam" : ""}`}>{item.type}</span><span className="table-questions"><FileQuestion size={14} /> {item.questions.length}</span><div className="row-actions"><button onClick={() => setEditing(item)} title="Edit"><Pencil size={15} /></button><button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(item, null, 2)); }} title="Copy JSON"><Copy size={15} /></button><button onClick={() => deleteQuiz(item.id)} title="Delete"><Trash2 size={15} /></button></div></div>)}</div></div> : <div className="subjects-admin-grid"><div className="subject-manager-card"><div className="admin-card-heading"><div><h2>Subjects</h2><p>Organize your assessment library</p></div><BookOpen size={20} /></div><div className="subject-admin-list">{library.subjects.map((item) => <div className="subject-admin-row" key={item.id}><span className={`subject-symbol ${item.color}`}>{item.icon}</span><div><strong>{item.name}</strong><small>{library.quizzes.filter((quiz) => quiz.subjectId === item.id).length} assessments</small></div><ChevronDown size={15} /></div>)}</div><form className="add-subject-form" onSubmit={addSubject}><input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} placeholder="New subject name" /><button className="secondary-button" type="submit"><Plus size={15} /> Add</button></form></div><div className="admin-info-card"><div className="info-icon"><Sparkles size={19} /></div><h3>Build a clear learning path</h3><p>Use subjects to group lessons, then add assessments with the rules that fit each learning moment.</p><div className="info-list"><span><Check size={15} /> Import questions in bulk</span><span><Check size={15} /> Add custom quiz rules</span><span><Check size={15} /> Keep everything offline-ready</span></div></div></div>}
   </main>;
