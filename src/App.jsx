@@ -600,9 +600,9 @@ function HomePage({ library, results, subject, setSubject, query, setQuery, onSt
     <main className="page-content">
       <section className="hero-grid">
         <div className="hero-copy">
-          <div className="eyebrow"><span className="eyebrow-line" /> YOUR PERSONAL STUDY SPACE</div>
+          <div className="eyebrow"><span className="eyebrow-line" /> STUDY SPACE NG POWER PUFF GIRLS</div>
           <h1>{settings.heroTitle}<br /><em>{settings.heroAccent}</em></h1>
-          <p>Pick up where you left off, or explore a new lesson. Your library stays synced across every device.</p>
+          <p>Aberya! Midterms na pud. Study pa ka? Ayaw na, si St. Rene bahala. Ayaw jud sila patuluga!</p>
           <div className="hero-actions">
             <a className="primary-button" href="#library"><BookOpen size={17} /> Explore library</a>
             {recentResult && <button className="text-button" onClick={() => document.getElementById("recent-work")?.scrollIntoView({ behavior: "smooth" })}>View recent result <ArrowRight size={15} /></button>}
