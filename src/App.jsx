@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -45,10 +45,12 @@ const STORAGE = {
   settings: "studyhub.settings.v1",
   theme: "studyhub.theme.v1",
 };
+const ADMIN_TOKEN_KEY = "studyhub.admin.session.v1";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 
 const DEFAULT_SETTINGS = {
-  heroTitle: "Reviewer Ni? Yes I",
-  heroAccent: "Pasadong Midterms cutiee <3",
+  heroTitle: "Learn with focus.",
+  heroAccent: "Progress with confidence.",
 };
 
 const DEFAULT_LIBRARY = {
@@ -124,6 +126,63 @@ function loadStorage(key, fallback) {
   }
 }
 
+async function requestApi(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  try {
+    const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch {
+    // Session storage may be unavailable in restricted browser contexts.
+  }
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+    cache: "no-store",
+  });
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    const error = new Error(payload.error || "StudyHub could not complete the request.");
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
+}
+
+function comparableLibrary(value) {
+  const library = normalizeLibrary(value);
+  return JSON.stringify({
+    subjects: library.subjects,
+    lessons: library.lessons,
+    quizzes: library.quizzes,
+  });
+}
+
+function readLegacyContent() {
+  try {
+    const libraryValue = localStorage.getItem(STORAGE.library);
+    const settingsValue = localStorage.getItem(STORAGE.settings);
+    if (!libraryValue && !settingsValue) return null;
+    const library = normalizeLibrary(libraryValue ? JSON.parse(libraryValue) : DEFAULT_LIBRARY);
+    const settings = { ...DEFAULT_SETTINGS, ...(settingsValue ? JSON.parse(settingsValue) : {}) };
+    return {
+      library,
+      settings,
+      customized:
+        comparableLibrary(library) !== comparableLibrary(DEFAULT_LIBRARY) ||
+        JSON.stringify(settings) !== JSON.stringify(DEFAULT_SETTINGS),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function deriveLessons(library) {
   const lessons = new Map();
   (library.quizzes || []).forEach((quiz) => {
@@ -144,7 +203,7 @@ function deriveLessons(library) {
 
 function normalizeLibrary(value) {
   const source = value && typeof value === "object" ? value : {};
-  const subjects = Array.isArray(source.subjects) && source.subjects.length ? source.subjects : DEFAULT_LIBRARY.subjects;
+  const subjects = Array.isArray(source.subjects) ? source.subjects : DEFAULT_LIBRARY.subjects;
   const quizzes = Array.isArray(source.quizzes) ? source.quizzes : [];
   const derivedLessons = deriveLessons({ subjects, quizzes });
   const explicitLessons = Array.isArray(source.lessons) ? source.lessons : [];
@@ -227,9 +286,10 @@ function answerIsCorrect(question, answer) {
 }
 
 function App() {
-  const [library, setLibrary] = useState(() => normalizeLibrary(loadStorage(STORAGE.library, DEFAULT_LIBRARY)));
+  const [legacyContent] = useState(() => readLegacyContent());
+  const [library, setLibrary] = useState(() => normalizeLibrary(DEFAULT_LIBRARY));
   const [results, setResults] = useState(() => loadStorage(STORAGE.results, []));
-  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...loadStorage(STORAGE.settings, {}) }));
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [theme, setTheme] = useState(() => loadStorage(STORAGE.theme, "dark") === "light" ? "light" : "dark");
   const [page, setPage] = useState("home");
   const [selectedSubject, setSelectedSubject] = useState("all");
@@ -239,41 +299,76 @@ function App() {
   const [quiz, setQuiz] = useState(null);
   const [quizResult, setQuizResult] = useState(null);
   const [notice, setNotice] = useState("");
+  const [stateReady, setStateReady] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
+  const [syncStatus, setSyncStatus] = useState("loading");
+  const [revision, setRevision] = useState(0);
+  const [pendingMigration, setPendingMigration] = useState(null);
+  const revisionRef = useRef(0);
+  const savingRef = useRef(false);
 
-  useEffect(() => localStorage.setItem(STORAGE.library, JSON.stringify(library)), [library]);
   useEffect(() => localStorage.setItem(STORAGE.results, JSON.stringify(results)), [results]);
-  useEffect(() => localStorage.setItem(STORAGE.settings, JSON.stringify(settings)), [settings]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     localStorage.setItem(STORAGE.theme, theme);
   }, [theme]);
 
+  const applySharedState = (shared, saveLocalCopy = true) => {
+    const nextLibrary = normalizeLibrary(shared.library);
+    const nextSettings = { ...DEFAULT_SETTINGS, ...(shared.settings || {}) };
+    revisionRef.current = Number(shared.revision) || 0;
+    setRevision(revisionRef.current);
+    setLibrary(nextLibrary);
+    setSettings(nextSettings);
+    setSelectedSubject((current) => current === "all" || nextLibrary.subjects.some((subject) => subject.id === current) ? current : "all");
+    if (saveLocalCopy) {
+      try {
+        localStorage.setItem(STORAGE.library, JSON.stringify(nextLibrary));
+        localStorage.setItem(STORAGE.settings, JSON.stringify(nextSettings));
+      } catch {
+        // The server remains authoritative if browser storage is unavailable.
+      }
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
-    const staticDataPaths = ["./data.json", "/data.json", "/public/data.json"];
+    const loadSharedState = async () => {
+      setStateReady(false);
+      setLoadError("");
+      setSyncStatus("loading");
+      try {
+        const shared = await requestApi("/api/state");
+        if (cancelled) return;
+        const needsMigration = !shared.initialized && Boolean(legacyContent?.customized);
+        applySharedState(shared, !needsMigration);
+        setPendingMigration(needsMigration ? legacyContent : null);
+        setStateReady(true);
+        setSyncStatus("saved");
 
-    const loadStaticLibrary = async () => {
-      for (const path of staticDataPaths) {
         try {
-          const response = await fetch(path, { cache: "no-store" });
-          if (!response.ok) continue;
-          const payload = await response.json();
-          const staticLibrary = libraryFromPayload(payload);
-          if (!hasLibraryData(staticLibrary)) continue;
-          if (!cancelled) setLibrary((current) => mergeLibrarySnapshots(current, staticLibrary));
-          return;
+          const session = await requestApi("/api/admin/session");
+          if (cancelled) return;
+          setAdminAuthed(Boolean(session.authenticated));
+          if (!session.authenticated) sessionStorage.removeItem(ADMIN_TOKEN_KEY);
         } catch {
-          // A missing or malformed static snapshot should never block local study data.
+          setAdminAuthed(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(error.message || "StudyHub could not connect to shared storage.");
+          setSyncStatus("error");
         }
       }
     };
 
-    loadStaticLibrary();
+    loadSharedState();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryCount]);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -299,63 +394,169 @@ function App() {
     setQuizResult(null);
   };
 
-  const updateLibrary = (next) => {
-    setLibrary(next);
-    setNotice("Library saved to this device");
+  const saveSharedState = async (nextLibrary, nextSettings) => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setSyncStatus("saving");
+    try {
+      const saved = await requestApi("/api/state", {
+        method: "POST",
+        body: JSON.stringify({
+          library: normalizeLibrary(nextLibrary),
+          settings: { ...DEFAULT_SETTINGS, ...nextSettings },
+          expectedRevision: revisionRef.current,
+        }),
+      });
+      applySharedState({
+        ...saved,
+        library: nextLibrary,
+        settings: nextSettings,
+        initialized: true,
+      });
+      setPendingMigration(null);
+      setSyncStatus("saved");
+      setNotice("Saved to shared StudyHub");
+      return true;
+    } catch (error) {
+      if (error.status === 409 && error.payload?.state) {
+        applySharedState(error.payload.state);
+        setPendingMigration(null);
+        setSyncStatus("updated");
+        setNotice("Another admin updated StudyHub. The latest version is loaded; review and save your change again.");
+      } else if (error.status === 401) {
+        sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+        setAdminAuthed(false);
+        setPage("home");
+        setAdminOpen(true);
+        setSyncStatus("error");
+        setNotice("Admin session expired. Sign in again to save changes.");
+      } else {
+        setSyncStatus("error");
+        setNotice(error.message || "Could not save to shared StudyHub. Check the connection and try again.");
+      }
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
   };
 
-  const updateSettings = (next) => {
-    setSettings(next);
-    setNotice("Homepage settings saved to this device");
+  const updateLibrary = (next) => saveSharedState(next, settings);
+  const updateSettings = (next) => saveSharedState(library, next);
+
+  const refreshSharedState = async (notify = false) => {
+    if (savingRef.current) return;
+    try {
+      const shared = await requestApi("/api/state");
+      if (Number(shared.revision) > revisionRef.current) {
+        applySharedState(shared);
+        setPendingMigration(null);
+        setSyncStatus("updated");
+        if (notify) setNotice("StudyHub content updated from another device");
+      } else if (syncStatus === "error") {
+        setSyncStatus("saved");
+      }
+    } catch {
+      setSyncStatus("error");
+    }
+  };
+
+  useEffect(() => {
+    if (!stateReady || page === "library") return undefined;
+    const refresh = () => refreshSharedState(true);
+    const interval = window.setInterval(() => refreshSharedState(false), 15000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [stateReady, page, revision, syncStatus]);
+
+  const importLegacyContent = async () => {
+    if (!pendingMigration) return;
+    await saveSharedState(pendingMigration.library, pendingMigration.settings);
+  };
+
+  const keepSharedContent = () => {
+    setPendingMigration(null);
+    try {
+      localStorage.setItem(STORAGE.library, JSON.stringify(library));
+      localStorage.setItem(STORAGE.settings, JSON.stringify(settings));
+    } catch {
+      // Keeping the server version does not depend on browser storage.
+    }
   };
 
   return (
     <div className="app-shell">
-      <Header
-        page={page}
-        onHome={openHome}
-        onAdmin={() => setAdminOpen(true)}
-        onNavigate={(nextPage) => setPage(nextPage)}
-        theme={theme}
-        setTheme={setTheme}
-      />
-      {page === "home" && (
-        <HomePage
-          library={library}
-          results={results}
-          subject={selectedSubject}
-          setSubject={setSelectedSubject}
-          query={searchQuery}
-          setQuery={setSearchQuery}
-          onStart={startQuiz}
+      {!stateReady ? (
+        <main className="shared-state-screen">
+          {loadError ? (
+            <div className="shared-state-message">
+              <h1>StudyHub could not connect</h1>
+              <p>{loadError}</p>
+              <button className="primary-button" onClick={() => setRetryCount((count) => count + 1)}>Retry connection</button>
+            </div>
+          ) : <div className="shared-state-message"><span className="status-dot" /><p>Loading shared StudyHub content…</p></div>}
+        </main>
+      ) : <>
+        <Header
+          page={page}
+          onHome={openHome}
           onAdmin={() => setAdminOpen(true)}
-          settings={settings}
+          onNavigate={(nextPage) => setPage(nextPage)}
+          theme={theme}
+          setTheme={setTheme}
+          syncStatus={syncStatus}
         />
-      )}
-      {page === "quiz" && quiz && <QuizPage quiz={quiz} onExit={openHome} onFinish={finishQuiz} />}
-      {page === "results" && quizResult && (
-        <ResultsPage result={quizResult} library={library} onHome={openHome} onRetry={() => startQuiz(quiz)} />
-      )}
-      {page === "library" && (
-        <AdminPage library={library} settings={settings} onUpdate={updateLibrary} onUpdateSettings={updateSettings} onExit={openHome} />
-      )}
-      {adminOpen && (
-        <AdminGate
-          authed={adminAuthed}
-          setAuthed={setAdminAuthed}
-          onClose={() => setAdminOpen(false)}
-          onContinue={() => {
-            setAdminOpen(false);
-            setPage("library");
-          }}
-        />
-      )}
-      {notice && <div className="toast"><CheckCircle2 size={17} /> {notice}</div>}
+        {page === "home" && (
+          <HomePage
+            library={library}
+            results={results}
+            subject={selectedSubject}
+            setSubject={setSelectedSubject}
+            query={searchQuery}
+            setQuery={setSearchQuery}
+            onStart={startQuiz}
+            onAdmin={() => setAdminOpen(true)}
+            settings={settings}
+          />
+        )}
+        {page === "quiz" && quiz && <QuizPage quiz={quiz} onExit={openHome} onFinish={finishQuiz} />}
+        {page === "results" && quizResult && (
+          <ResultsPage result={quizResult} library={library} onHome={openHome} onRetry={() => startQuiz(quiz)} />
+        )}
+        {page === "library" && (
+          <AdminPage
+            library={library}
+            settings={settings}
+            onUpdate={updateLibrary}
+            onUpdateSettings={updateSettings}
+            onExit={openHome}
+            syncStatus={syncStatus}
+            revision={revision}
+            pendingMigration={pendingMigration}
+            onImportLegacy={importLegacyContent}
+            onKeepShared={keepSharedContent}
+          />
+        )}
+        {adminOpen && (
+          <AdminGate
+            authed={adminAuthed}
+            setAuthed={setAdminAuthed}
+            onClose={() => setAdminOpen(false)}
+            onContinue={() => {
+              setAdminOpen(false);
+              setPage("library");
+            }}
+          />
+        )}
+        {notice && <div className="toast"><CheckCircle2 size={17} /> {notice}</div>}
+      </>}
     </div>
   );
 }
 
-function Header({ page, onHome, onAdmin, onNavigate, theme, setTheme }) {
+function Header({ page, onHome, onAdmin, onNavigate, theme, setTheme, syncStatus }) {
   const isAdmin = page === "library";
   return (
     <header className="topbar">
@@ -369,7 +570,7 @@ function Header({ page, onHome, onAdmin, onNavigate, theme, setTheme }) {
           <button className={page === "library" ? "nav-link active" : "nav-link"} onClick={() => (isAdmin ? onNavigate("library") : onAdmin())}>{iconFor("library")} Manage library</button>
         </nav>
         <div className="topbar-actions">
-          <span className="online-status"><span className="status-dot" /> Offline-ready</span>
+          <span className={`online-status sync-${syncStatus}`}><span className="status-dot" /> {syncStatus === "saving" ? "Saving changes" : syncStatus === "error" ? "Sync unavailable" : "Shared StudyHub"}</span>
           <div className="theme-switcher" role="group" aria-label="Visual theme">
             <button className={`theme-button ${theme === "light" ? "active" : ""}`} onClick={() => setTheme("light")} aria-pressed={theme === "light"} title="Use light theme"><Sun size={15} /><span className="theme-label">Light</span></button>
             <button className={`theme-button ${theme === "dark" ? "active" : ""}`} onClick={() => setTheme("dark")} aria-pressed={theme === "dark"} title="Use dark theme"><Moon size={15} /><span className="theme-label">Dark</span></button>
@@ -399,9 +600,9 @@ function HomePage({ library, results, subject, setSubject, query, setQuery, onSt
     <main className="page-content">
       <section className="hero-grid">
         <div className="hero-copy">
-          <div className="eyebrow"><span className="eyebrow-line" />STUDY SPACE NG POWER PUFF GIRLS</div>
+          <div className="eyebrow"><span className="eyebrow-line" /> YOUR PERSONAL STUDY SPACE</div>
           <h1>{settings.heroTitle}<br /><em>{settings.heroAccent}</em></h1>
-          <p>Aberya! Midterms na pud. Mag-study pa ka? Ayaw na uy, si St. Rene na bahala. MA! MA! Ayaw jud sila patuluga.</p>
+          <p>Pick up where you left off, or explore a new lesson. Your library stays synced across every device.</p>
           <div className="hero-actions">
             <a className="primary-button" href="#library"><BookOpen size={17} /> Explore library</a>
             {recentResult && <button className="text-button" onClick={() => document.getElementById("recent-work")?.scrollIntoView({ behavior: "smooth" })}>View recent result <ArrowRight size={15} /></button>}
@@ -470,20 +671,32 @@ function QuizCard({ quiz, library, onStart }) {
 function AdminGate({ authed, setAuthed, onClose, onContinue }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const submit = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+  const submit = async (event) => {
     event.preventDefault();
-    if (password === "powerpuffgirls") {
+    setSubmitting(true);
+    try {
+      const session = await requestApi("/api/admin/session", {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      });
+      sessionStorage.setItem(ADMIN_TOKEN_KEY, session.token);
       setAuthed(true);
       onContinue();
-    } else setError("That password doesn’t match. Try again.");
+      setPassword("");
+    } catch (requestError) {
+      setError(requestError.message || "Could not verify admin access. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <div className="modal-card login-modal">
       <button className="modal-close" onClick={onClose}><X size={18} /></button>
       <div className="login-lock"><ShieldCheck size={25} /></div>
       <div className="eyebrow centered">LIBRARY ACCESS</div><h2>Welcome, admin</h2><p>Manage your subjects, lessons, and assessments from one place.</p>
-      {!authed ? <form onSubmit={submit}><label className="field-label">Admin password<input autoFocus type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} placeholder="Enter your password" /></label>{error && <div className="error-message"><XCircle size={15} /> {error}</div>}<button className="primary-button full" type="submit"><LockKeyhole size={16} /> Unlock library</button></form> : <button className="primary-button full" onClick={onContinue}>Continue to library <ArrowRight size={16} /></button>}
-      <small className="modal-note">This is a local-only admin gate for your study device.</small>
+      {!authed ? <form onSubmit={submit}><label className="field-label">Admin password<input autoFocus type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} placeholder="Enter your password" /></label>{error && <div className="error-message"><XCircle size={15} /> {error}</div>}<button className="primary-button full" type="submit" disabled={submitting}><LockKeyhole size={16} /> {submitting ? "Verifying…" : "Unlock library"}</button></form> : <button className="primary-button full" onClick={onContinue}>Continue to library <ArrowRight size={16} /></button>}
+      <small className="modal-note">Admin access is verified by the shared StudyHub server.</small>
     </div>
   </div>;
 }
@@ -556,52 +769,143 @@ function ResultsPage({ result, library, onHome, onRetry }) {
 const emptyQuestion = () => ({ id: makeId("question"), type: "multiple", text: "", options: ["", "", "", ""], answer: "", explanation: "" });
 const blankQuiz = (subjectId) => ({ id: makeId("quiz"), title: "", subjectId, lesson: "Lesson 01", type: "Quiz", tags: ["Practice"], questionTypes: ["Multiple choice"], rules: { timer: false, minutes: 10, skip: true, previous: true, flag: true, random: false, explanation: true }, questions: [emptyQuestion()] });
 
-function AdminPage({ library, settings, onUpdate, onUpdateSettings, onExit }) {
+function AdminPage({ library, settings, onUpdate, onUpdateSettings, onExit, syncStatus, revision, pendingMigration, onImportLegacy, onKeepShared }) {
   const [editing, setEditing] = useState(null);
   const [adminTab, setAdminTab] = useState("assessments");
   const [subjectName, setSubjectName] = useState("");
   const quizzes = library.quizzes;
-  const saveQuiz = (nextQuiz) => {
+  const saveQuiz = async (nextQuiz) => {
     const exists = library.quizzes.some((item) => item.id === nextQuiz.id);
-    onUpdate({ ...library, quizzes: exists ? library.quizzes.map((item) => item.id === nextQuiz.id ? nextQuiz : item) : [nextQuiz, ...library.quizzes] });
-    setEditing(null);
+    const saved = await onUpdate({ ...library, quizzes: exists ? library.quizzes.map((item) => item.id === nextQuiz.id ? nextQuiz : item) : [nextQuiz, ...library.quizzes] });
+    if (saved) setEditing(null);
   };
-  const deleteQuiz = (id) => {
-    if (window.confirm("Delete this assessment from your local library?")) onUpdate({ ...library, quizzes: library.quizzes.filter((item) => item.id !== id) });
+  const deleteQuiz = async (id) => {
+    if (window.confirm("Delete this assessment from shared StudyHub?")) {
+      await onUpdate({ ...library, quizzes: library.quizzes.filter((item) => item.id !== id) });
+    }
   };
-  const deleteSubject = (subject) => {
+  const deleteSubject = async (subject) => {
     const subjectQuizzes = library.quizzes.filter((quiz) => quiz.subjectId === subject.id);
     const assessmentText = subjectQuizzes.length
       ? ` and its ${subjectQuizzes.length} associated assessment${subjectQuizzes.length === 1 ? "" : "s"}`
       : "";
-    if (!window.confirm(`Delete the subject "${subject.name}"${assessmentText} from your local library? This action cannot be undone.`)) return;
-    onUpdate({
+    if (!window.confirm(`Delete the subject "${subject.name}"${assessmentText} from shared StudyHub? This action cannot be undone.`)) return;
+    await onUpdate({
       ...library,
       subjects: library.subjects.filter((item) => item.id !== subject.id),
       quizzes: library.quizzes.filter((quiz) => quiz.subjectId !== subject.id),
     });
   };
-  const addSubject = (event) => {
+  const addSubject = async (event) => {
     event.preventDefault();
     const name = subjectName.trim();
     if (!name) return;
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    if (!library.subjects.some((item) => item.id === id)) onUpdate({ ...library, subjects: [...library.subjects, { id, name, color: ["violet", "blue", "amber", "mint"][library.subjects.length % 4], icon: "✦" }] });
-    setSubjectName("");
+    if (library.subjects.some((item) => item.id === id)) {
+      setSubjectName("");
+      return;
+    }
+    const saved = await onUpdate({ ...library, subjects: [...library.subjects, { id, name, color: ["violet", "blue", "amber", "mint"][library.subjects.length % 4], icon: "✦" }] });
+    if (saved) setSubjectName("");
   };
   if (editing) return <QuizEditor quiz={editing} library={library} onSave={saveQuiz} onCancel={() => setEditing(null)} />;
-  return <main className="admin-page"><div className="admin-header"><div><button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button><div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div><h1>Manage your library</h1><p>Build focused practice for every lesson. Changes are saved locally to this device.</p></div><div className="admin-header-actions"><button className="export-button" onClick={() => downloadDatabase(library, settings)}><Download size={16} /> Save &amp; Export Database JSON</button><button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button></div></div>
-    <div className="admin-tabs"><button className={adminTab === "assessments" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("assessments")}>{iconFor("library")} Assessments <span>{quizzes.length}</span></button><button className={adminTab === "subjects" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("subjects")}>{iconFor("book")} Subjects <span>{library.subjects.length}</span></button><button className={adminTab === "settings" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("settings")}>{iconFor("settings")} Site settings</button><div className="admin-save-state"><span className="status-dot" /> Saved on this device</div></div>
-    {adminTab === "assessments" ? <div className="admin-table-card"><div className="admin-table-heading"><div><h2>Assessments</h2><p>Quizzes and exams available to your students</p></div><div className="admin-search"><Search size={16} /><input placeholder="Find an assessment" /></div></div><div className="assessment-list">{quizzes.map((item) => <div className="assessment-row" key={item.id}><div className={`assessment-symbol ${getSubject(library, item.subjectId).color}`}>{getSubject(library, item.subjectId).icon}</div><div className="assessment-info"><h3>{item.title || "Untitled assessment"}</h3><span>{getSubject(library, item.subjectId).name} <i>·</i> {item.lesson}</span></div><span className={`table-type ${item.type === "Exam" ? "exam" : ""}`}>{item.type}</span><span className="table-questions"><FileQuestion size={14} /> {item.questions.length}</span><div className="row-actions"><button onClick={() => setEditing(item)} title="Edit"><Pencil size={15} /></button><button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(item, null, 2)); }} title="Copy JSON"><Copy size={15} /></button><button onClick={() => deleteQuiz(item.id)} title="Delete"><Trash2 size={15} /></button></div></div>)}</div></div> : adminTab === "subjects" ? <div className="subjects-admin-grid"><div className="subject-manager-card"><div className="admin-card-heading"><div><h2>Subjects</h2><p>Organize your assessment library</p></div><BookOpen size={20} /></div><div className="subject-admin-list">{library.subjects.map((item) => <div className="subject-admin-row" key={item.id}><span className={`subject-symbol ${item.color}`}>{item.icon}</span><div><strong>{item.name}</strong><small>{library.quizzes.filter((quiz) => quiz.subjectId === item.id).length} assessments</small></div><button type="button" className="subject-delete-button" onClick={() => deleteSubject(item)} title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`}><Trash2 size={15} /></button></div>)}</div><form className="add-subject-form" onSubmit={addSubject}><input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} placeholder="New subject name" /><button className="secondary-button" type="submit"><Plus size={15} /> Add</button></form></div><div className="admin-info-card"><div className="info-icon"><Sparkles size={19} /></div><h3>Build a clear learning path</h3><p>Use subjects to group lessons, then add assessments with the rules that fit each learning moment.</p><div className="info-list"><span><Check size={15} /> Import questions in bulk</span><span><Check size={15} /> Add custom quiz rules</span><span><Check size={15} /> Keep everything offline-ready</span></div></div></div> : <SiteSettings settings={settings} onSave={onUpdateSettings} />}
+  const syncMessage = syncStatus === "saving"
+    ? "Saving to StudyHub…"
+    : syncStatus === "error"
+      ? "Not synced — check connection"
+      : syncStatus === "updated"
+        ? "Updated from shared StudyHub"
+        : revision === 0
+          ? "Shared starter content"
+          : "Saved to shared StudyHub";
+  return <main className="admin-page">
+    <div className="admin-header">
+      <div>
+        <button className="back-link" onClick={onExit}><ArrowLeft size={16} /> Back to StudyHub</button>
+        <div className="eyebrow admin-eyebrow"><ShieldCheck size={14} /> ADMIN WORKSPACE</div>
+        <h1>Manage your library</h1>
+        <p>Changes are shared with students and other devices as soon as they save.</p>
+      </div>
+      <div className="admin-header-actions">
+        <button className="export-button" onClick={() => downloadDatabase(library, settings)}><Download size={16} /> Save &amp; Export Database JSON</button>
+        <button className="primary-button" onClick={() => setEditing(blankQuiz(library.subjects[0]?.id))}><Plus size={17} /> New assessment</button>
+      </div>
+    </div>
+    {pendingMigration && <section className="migration-banner" aria-live="polite">
+      <div><strong>Previous changes found on this device</strong><p>Import this browser’s saved subjects, assessments, and headings into shared StudyHub? This will replace the shared starter content.</p></div>
+      <div className="migration-actions">
+        <button className="primary-button" onClick={onImportLegacy} disabled={syncStatus === "saving"}>Import this device’s content</button>
+        <button className="text-button" onClick={onKeepShared}>Keep shared content</button>
+      </div>
+    </section>}
+    <div className="admin-tabs">
+      <button className={adminTab === "assessments" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("assessments")}>{iconFor("library")} Assessments <span>{quizzes.length}</span></button>
+      <button className={adminTab === "subjects" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("subjects")}>{iconFor("book")} Subjects <span>{library.subjects.length}</span></button>
+      <button className={adminTab === "settings" ? "admin-tab active" : "admin-tab"} onClick={() => setAdminTab("settings")}>{iconFor("settings")} Site settings</button>
+      <div className="admin-save-state" title={`Shared revision ${revision}`}><span className={`status-dot ${syncStatus === "error" ? "status-error" : ""}`} /> {syncMessage}</div>
+    </div>
+    {adminTab === "assessments" ? (
+      <div className="admin-table-card">
+        <div className="admin-table-heading">
+          <div><h2>Assessments</h2><p>Quizzes and exams available to your students</p></div>
+          <div className="admin-search"><Search size={16} /><input placeholder="Find an assessment" /></div>
+        </div>
+        <div className="assessment-list">
+          {quizzes.length === 0 ? <div className="empty-state"><h3>No assessments yet</h3><p>Create an assessment to add practice for your students.</p></div> : quizzes.map((item) => {
+            const subject = getSubject(library, item.subjectId);
+            return <div className="assessment-row" key={item.id}>
+              <div className={`assessment-symbol ${subject?.color || "violet"}`}>{subject?.icon || "✦"}</div>
+              <div className="assessment-info"><h3>{item.title || "Untitled assessment"}</h3><span>{subject?.name || "Unassigned"} <i>·</i> {item.lesson}</span></div>
+              <span className={`table-type ${item.type === "Exam" ? "exam" : ""}`}>{item.type}</span>
+              <span className="table-questions"><FileQuestion size={14} /> {item.questions.length}</span>
+              <div className="row-actions">
+                <button onClick={() => setEditing(item)} title="Edit"><Pencil size={15} /></button>
+                <button onClick={() => { navigator.clipboard?.writeText(JSON.stringify(item, null, 2)); }} title="Copy JSON"><Copy size={15} /></button>
+                <button onClick={() => deleteQuiz(item.id)} title="Delete"><Trash2 size={15} /></button>
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+    ) : adminTab === "subjects" ? (
+      <div className="subjects-admin-grid">
+        <div className="subject-manager-card">
+          <div className="admin-card-heading"><div><h2>Subjects</h2><p>Organize your assessment library</p></div><BookOpen size={20} /></div>
+          <div className="subject-admin-list">
+            {library.subjects.map((item) => <div className="subject-admin-row" key={item.id}>
+              <span className={`subject-symbol ${item.color}`}>{item.icon}</span>
+              <div><strong>{item.name}</strong><small>{library.quizzes.filter((quiz) => quiz.subjectId === item.id).length} assessments</small></div>
+              <button
+                type="button"
+                className="subject-delete-button"
+                onClick={() => deleteSubject(item)}
+                title={library.subjects.length <= 1 ? "Add another subject before deleting the last one" : `Delete ${item.name}`}
+                aria-label={`Delete ${item.name}`}
+                disabled={library.subjects.length <= 1}
+              ><Trash2 size={15} /></button>
+            </div>)}
+          </div>
+          <form className="add-subject-form" onSubmit={addSubject}>
+            <input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} placeholder="New subject name" />
+            <button className="secondary-button" type="submit"><Plus size={15} /> Add</button>
+          </form>
+        </div>
+        <div className="admin-info-card">
+          <div className="info-icon"><Sparkles size={19} /></div><h3>Build a clear learning path</h3>
+          <p>Use subjects to group lessons, then add assessments with the rules that fit each learning moment.</p>
+          <div className="info-list"><span><Check size={15} /> Import questions in bulk</span><span><Check size={15} /> Add custom quiz rules</span><span><Check size={15} /> Keep everything synced</span></div>
+        </div>
+      </div>
+    ) : <SiteSettings settings={settings} onSave={onUpdateSettings} />}
   </main>;
 }
 
 function SiteSettings({ settings, onSave }) {
   const [draft, setDraft] = useState(() => ({ ...DEFAULT_SETTINGS, ...settings }));
   const update = (key, value) => setDraft((previous) => ({ ...previous, [key]: value }));
-  const save = (event) => {
+  const save = async (event) => {
     event.preventDefault();
-    onSave({
+    await onSave({
       heroTitle: draft.heroTitle.trim() || DEFAULT_SETTINGS.heroTitle,
       heroAccent: draft.heroAccent.trim() || DEFAULT_SETTINGS.heroAccent,
     });
@@ -611,7 +915,7 @@ function SiteSettings({ settings, onSave }) {
       <div className="admin-card-heading"><div><h2>Homepage heading</h2><p>Customize the message students see at the top of the study space.</p></div><Settings2 size={20} /></div>
       <label className="field-label">Main heading<input value={draft.heroTitle} onChange={(event) => update("heroTitle", event.target.value)} placeholder="Learn with focus." /></label>
       <label className="field-label">Accent heading<input value={draft.heroAccent} onChange={(event) => update("heroAccent", event.target.value)} placeholder="Progress with confidence." /></label>
-      <div className="settings-actions"><span className="settings-help">Changes are saved locally on this device.</span><button className="primary-button" type="submit"><Check size={16} /> Save heading</button></div>
+      <div className="settings-actions"><span className="settings-help">Saved changes appear across StudyHub devices.</span><button className="primary-button" type="submit"><Check size={16} /> Save heading</button></div>
     </form>
     <div className="settings-card settings-preview-card">
       <div className="admin-card-heading"><div><h2>Live preview</h2><p>This is how the heading will appear on the homepage.</p></div><Sparkles size={20} /></div>
