@@ -163,3 +163,7 @@ html[data-theme="dark"] .settings-preview h3{color:#eef3fa}
   .settings-actions{align-items:flex-start;flex-direction:column}
   .settings-actions .primary-button{width:100%}
 }
+.subject-delete-button{display:grid;place-items:center;width:30px;height:30px;border-radius:7px;color:#9aa5b4;background:transparent;transition:background .15s,color .15s}
+.subject-delete-button:hover{background:#fff0f0;color:#cf5b66}
+html[data-theme="dark"] .subject-delete-button{color:#8492a5}
+html[data-theme="dark"] .subject-delete-button:hover{background:#44262c;color:#ef9ca3}
